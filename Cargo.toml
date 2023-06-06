@@ -1,0 +1,2 @@
+[dependencies]
+erc20 = { git = "https://github.com/paritytech/ink/tree/master/examples/erc20", default-features = false }
