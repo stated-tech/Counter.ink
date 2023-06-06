@@ -38,7 +38,7 @@ mod token_swap {
         }
 
         #[ink(message)]
-        pub fn create_swap(
+        pub fn create_order(
             &mut self,
             token_a: AccountId,
             token_b: AccountId,
