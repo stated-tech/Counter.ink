@@ -11,7 +11,7 @@ Currently, it features two primary functions: one to create an order and another
 
 #### Future development
 
-In our continuous pursuit to enhance user experience and provide versatile trading options, we have future functionalities planned. A key feature that we aim to integrate is 'Partial Fill'. This function enables a user to have greater flexibility in accepting orders. For instance, if a user proposes an exchange of 10 ETH valued at 2000 euros each, another user has the choice to accept a partial order of, say, 5 ETH for 1000 euros, without the need for the proposer to create a new order.
+In our continuous pursuit to enhance user experience and provide versatile trading options, we have future functionalities planned. A key feature that we aim to integrate is 'Partial Fill'. This function enables a user to have greater flexibility in accepting orders. For instance, if a user proposes an exchange of 10 ETH valued at 2000 usdc each, another user has the choice to accept a partial order of, say, 5 ETH , without the need for the proposer to create a new order.
 
 Furthermore, our upcoming updates will focus on comprehensive testing features and strengthening the overall security of the contract.
 
