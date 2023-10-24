@@ -8,7 +8,6 @@ mod token_swap {
     use ink_env::call::{build_call, ExecutionInput, Selector};
     use ink_env::DefaultEnvironment;
 
-    // just use a struct here
     pub type Swap = (
         AccountId,   // creator
         AccountId,   // token_a
@@ -90,9 +89,6 @@ mod token_swap {
             }
         }
 
-        // How do you create a swap? should this be a message?
-        // you should add some doc comments on top of all the functions, so that the reader can
-        // figure out what they are doing
         pub fn create_swap(
             &mut self,
             token_a: AccountId,
@@ -108,13 +104,6 @@ mod token_swap {
                 return Err(Error::InsufficientBalance);
             }
 
-            // b is the token you want to receive ? So you probably don't need to check the
-            // balance, since you don't have it yet
-            let balance_b: Balance = self.get_balance(token_b, caller)?;
-            if balance_b < amount_b {
-                return Err(Error::InsufficientBalance);
-            }
-
             self.transfer_token(token_a, caller, self.env().account_id(), amount_a)?;
 
             let expiration = self
@@ -123,10 +112,8 @@ mod token_swap {
                 .checked_add(duration)
                 .ok_or(Error::CallFailed)?;
 
-            // use a named type and a new fn
             let new_swap = (caller, token_a, token_b, amount_a, amount_b, expiration);
 
-            // use an insert fn on the (to be created) Swap struct
             self.swaps.insert(self.swap_count, &new_swap);
             let id = self.swap_count;
             self.swap_count = self.swap_count.checked_add(1).ok_or(Error::CallFailed)?;
@@ -207,5 +194,68 @@ mod token_swap {
                 _ => Err(Error::TransferFailed),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::token_swap::TokenSwap;
+
+    #[ink::test]
+    fn new_works() {
+        let token_swap = TokenSwap::new();
+        assert_eq!(token_swap.swap_count, 0);
+    }
+
+    #[ink::test]
+    fn create_swap_works() {
+        let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+
+        let mut token_swap = TokenSwap::new();
+        let result = token_swap.create_swap(accounts.alice, accounts.bob, 50, 100, 10);
+        assert!(result.is_ok());
+        assert_eq!(token_swap.swap_count, 1);
+    }
+
+    #[ink::test]
+    #[should_panic(expected = "Unauthorized")]
+    fn delete_swap_fails_if_not_creator() {
+        let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+
+        let mut token_swap = TokenSwap::new();
+        token_swap
+            .create_swap(accounts.alice, accounts.bob, 50, 100, 10)
+            .unwrap();
+
+        ink_env::test::set_caller::<ink_env::DefaultEnvironment>(accounts.charlie);
+        token_swap
+            .delete_swap(0)
+            .expect("Expected unauthorized error");
+    }
+
+    #[ink::test]
+    fn delete_swap_works_if_creator() {
+        let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+
+        let mut token_swap = TokenSwap::new();
+        token_swap
+            .create_swap(accounts.alice, accounts.bob, 50, 100, 10)
+            .unwrap();
+        let result = token_swap.delete_swap(0);
+        assert!(result.is_ok());
+        assert_eq!(token_swap.swap_count, 0);
+    }
+
+    #[ink::test]
+    fn accept_swap_works() {
+        let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+
+        let mut token_swap = TokenSwap::new();
+        token_swap
+            .create_swap(accounts.alice, accounts.bob, 50, 100, 10)
+            .unwrap();
+        let result = token_swap.accept_swap(0);
+        assert!(result.is_ok());
     }
 }
