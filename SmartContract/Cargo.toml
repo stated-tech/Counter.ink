@@ -1,2 +1,32 @@
+[package]
+name = "contractotc"
+version = "0.1.0"
+authors = ["Matt <johndoe@example.com>"]
+edition = "2021"
+
 [dependencies]
-erc20 = { git = "https://github.com/paritytech/ink/tree/master/examples/erc20", default-features = false }
+ink = { version = "4.2.0", default-features = false }
+scale = { package = "parity-scale-codec", version = "3", default-features = false, features = ["derive"] }
+scale-info = { version = "2.6", default-features = false, features = ["derive"], optional = true }
+ink_env = { version = "4.2.1", default-features = false }
+ink_lang = { version = "3.4.0", default-features = false }
+
+
+[dev-dependencies]
+ink_e2e = "4.2.1"
+
+[lib]
+path = "lib.rs"
+
+[features]
+default = ["std"]
+std = [
+
+    "ink/std",
+    "ink_env/std",
+    "scale/std",
+    "scale-info/std",
+    "ink_lang/std",
+]
+ink-as-dependency = []
+e2e-tests = []
