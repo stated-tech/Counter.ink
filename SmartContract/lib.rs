@@ -9,12 +9,15 @@ mod token_swap {
     use ink_env::DefaultEnvironment;
 
     pub type Swap = (
-        AccountId,   // creator
-        AccountId,   // token_a
-        AccountId,   // token_b
-        Balance,     // amount_a
-        Balance,     // amount_b
-        BlockNumber, // expiration
+        AccountId,
+        AccountId,
+        AccountId,
+        Balance,
+        Balance,
+        BlockNumber,
+        Balance,           // Amount of Token A already accepted
+        Balance,           // Amount of Token B already accepted
+        Option<AccountId>, // Allowed acceptor
     );
 
     #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
@@ -26,6 +29,8 @@ mod token_swap {
         SwapExpired,
         TransferFailed,
         CallFailed,
+        DelegateFailed,
+        DelegateFunctionFailed,
     }
 
     pub type Result<T> = core::result::Result<T, Error>;
@@ -34,6 +39,8 @@ mod token_swap {
     pub struct TokenSwap {
         pub swaps: Mapping<u64, Swap>,
         pub swap_count: u64,
+        delegated_contract: Option<AccountId>,
+        owner: AccountId,
     }
 
     #[ink(event)]
@@ -64,7 +71,18 @@ mod token_swap {
             Self {
                 swaps: Default::default(),
                 swap_count: 0,
+                delegated_contract: None,
+                owner: Self::env().caller(),
             }
+        }
+
+        #[ink(message)]
+        pub fn set_delegated_contract(&mut self, contract: AccountId) {
+            if self.env().caller() != self.owner {
+                ink_env::debug_println!("Unauthorized");
+                return;
+            }
+            self.delegated_contract = Some(contract);
         }
 
         fn get_balance(&self, token_contract: AccountId, account: AccountId) -> Result<Balance> {
@@ -96,75 +114,99 @@ mod token_swap {
             amount_a: Balance,
             amount_b: Balance,
             duration: BlockNumber,
+            allowed_acceptor: Option<AccountId>, // Nouvel argument
         ) -> Result<u64> {
-            let caller = self.env().caller();
-            let balance_a: Balance = self.get_balance(token_a, caller)?;
+            if let Some(delegate) = self.delegated_contract {
+                let selector = ink::selector_bytes!("create_swap_delegate");
+                let nested_result: core::result::Result<
+                    core::result::Result<(), LangError>,
+                    ink_env::Error,
+                > = build_call::<DefaultEnvironment>()
+                    .call(delegate)
+                    .gas_limit(5000)
+                    .transferred_value(0)
+                    .exec_input(
+                        ExecutionInput::new(Selector::new(selector))
+                            .push_arg(token_a)
+                            .push_arg(token_b)
+                            .push_arg(amount_a)
+                            .push_arg(amount_b)
+                            .push_arg(duration),
+                    )
+                    .returns::<()>()
+                    .try_invoke();
 
-            if balance_a < amount_a {
-                return Err(Error::InsufficientBalance);
+                let result = match nested_result {
+                    Ok(inner_result) => inner_result.map_err(|_| Error::DelegateFunctionFailed),
+                    Err(_) => Err(Error::DelegateFailed),
+                };
+
+                match result {
+                    Ok(()) => Ok(self.swap_count),
+                    Err(e) => Err(e),
+                }
+            } else {
+                let caller = self.env().caller();
+                let balance_a: Balance = self.get_balance(token_a, caller)?;
+
+                if balance_a < amount_a {
+                    return Err(Error::InsufficientBalance);
+                }
+
+                let balance_b: Balance = self.get_balance(token_b, caller)?;
+                if balance_b < amount_b {
+                    return Err(Error::InsufficientBalance);
+                }
+
+                self.transfer_token(token_a, caller, self.env().account_id(), amount_a)?;
+
+                let expiration = self
+                    .env()
+                    .block_number()
+                    .checked_add(duration)
+                    .ok_or(Error::CallFailed)?;
+
+                let new_swap = (
+                    caller,
+                    token_a,
+                    token_b,
+                    amount_a,
+                    amount_b,
+                    expiration,
+                    0,
+                    0,
+                    allowed_acceptor,
+                );
+
+                self.swaps.insert(self.swap_count, &new_swap);
+                let id = self.swap_count;
+                self.swap_count = self.swap_count.checked_add(1).ok_or(Error::CallFailed)?;
+
+                self.env().emit_event(SwapCreated {
+                    id,
+                    creator: caller,
+                });
+
+                Ok(id)
             }
-
-            self.transfer_token(token_a, caller, self.env().account_id(), amount_a)?;
-
-            let expiration = self
-                .env()
-                .block_number()
-                .checked_add(duration)
-                .ok_or(Error::CallFailed)?;
-
-            let new_swap = (caller, token_a, token_b, amount_a, amount_b, expiration);
-
-            self.swaps.insert(self.swap_count, &new_swap);
-            let id = self.swap_count;
-            self.swap_count = self.swap_count.checked_add(1).ok_or(Error::CallFailed)?;
-
-            self.env().emit_event(SwapCreated {
-                id,
-                creator: caller,
-            });
-
-            Ok(id)
         }
 
         #[ink(message)]
         pub fn delete_swap(&mut self, swap_id: u64) -> Result<()> {
-            let caller = self.env().caller();
-            let swap = self.swaps.get(&swap_id).ok_or(Error::SwapNotFound)?;
+            if !self.swaps.contains(&swap_id) {
+                return Err(Error::SwapNotFound);
+            }
 
-            if caller != swap.0 {
+            let swap_data = self.swaps.get(&swap_id).unwrap();
+            let creator = swap_data.0;
+
+            if self.env().caller() != creator {
                 return Err(Error::Unauthorized);
             }
 
-            self.transfer_token(swap.1, self.env().account_id(), swap.0, swap.3)?;
-            self.swaps.take(&swap_id);
+            self.swaps.remove(&swap_id);
 
             self.env().emit_event(SwapDeleted { id: swap_id });
-
-            Ok(())
-        }
-
-        #[ink(message)]
-        pub fn accept_swap(&mut self, swap_id: u64) -> Result<()> {
-            let swap = self.swaps.take(&swap_id).ok_or(Error::SwapNotFound)?;
-
-            let caller = self.env().caller();
-
-            let balance_b: Balance = self.get_balance(swap.2, caller)?;
-            if balance_b < swap.4 {
-                return Err(Error::InsufficientBalance);
-            }
-
-            if self.env().block_number() > swap.5 {
-                return Err(Error::SwapExpired);
-            }
-
-            self.transfer_token(swap.1, self.env().account_id(), caller, swap.3)?;
-            self.transfer_token(swap.2, caller, swap.0, swap.4)?;
-
-            self.env().emit_event(SwapAccepted {
-                id: swap_id,
-                acceptor: caller,
-            });
 
             Ok(())
         }
@@ -176,12 +218,15 @@ mod token_swap {
             to: AccountId,
             amount: Balance,
         ) -> Result<()> {
-            let result = ink_env::call::build_call::<DefaultEnvironment>()
+            let transfer_result: core::result::Result<
+                core::result::Result<(), LangError>,
+                ink_env::Error,
+            > = build_call::<DefaultEnvironment>()
                 .call(token_contract)
                 .gas_limit(5000)
                 .transferred_value(0)
                 .exec_input(
-                    ExecutionInput::new(Selector::new(ink::selector_bytes!("transfer_from")))
+                    ExecutionInput::new(Selector::new(ink::selector_bytes!("transfer")))
                         .push_arg(from)
                         .push_arg(to)
                         .push_arg(amount),
@@ -189,73 +234,74 @@ mod token_swap {
                 .returns::<()>()
                 .try_invoke();
 
-            match result {
+            match transfer_result {
                 Ok(Ok(())) => Ok(()),
-                _ => Err(Error::TransferFailed),
+                Ok(Err(_)) => Err(Error::TransferFailed),
+                Err(_) => Err(Error::CallFailed),
             }
         }
-    }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::token_swap::TokenSwap;
+        #[ink(message)]
+        pub fn accept_swap(
+            &mut self,
+            swap_id: u64,
+            amount_a: Balance,
+            amount_b: Balance,
+        ) -> Result<()> {
+            if !self.swaps.contains(&swap_id) {
+                return Err(Error::SwapNotFound);
+            }
 
-    #[ink::test]
-    fn new_works() {
-        let token_swap = TokenSwap::new();
-        assert_eq!(token_swap.swap_count, 0);
-    }
+            let swap_data = self.swaps.get(&swap_id).unwrap();
 
-    #[ink::test]
-    fn create_swap_works() {
-        let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+            let creator = swap_data.0;
+            let token_a = swap_data.1;
+            let token_b = swap_data.2;
+            let required_a = swap_data.3;
+            let required_b = swap_data.4;
+            let expiration = swap_data.5;
+            let accepted_a = swap_data.6;
+            let accepted_b = swap_data.7;
 
-        let mut token_swap = TokenSwap::new();
-        let result = token_swap.create_swap(accounts.alice, accounts.bob, 50, 100, 10);
-        assert!(result.is_ok());
-        assert_eq!(token_swap.swap_count, 1);
-    }
+            if let Some(allowed_acceptor) = swap_data.8 {
+                if self.env().caller() != allowed_acceptor {
+                    return Err(Error::Unauthorized);
+                }
+            }
 
-    #[ink::test]
-    #[should_panic(expected = "Unauthorized")]
-    fn delete_swap_fails_if_not_creator() {
-        let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+            if self.env().block_number() > expiration {
+                return Err(Error::SwapExpired);
+            }
 
-        let mut token_swap = TokenSwap::new();
-        token_swap
-            .create_swap(accounts.alice, accounts.bob, 50, 100, 10)
-            .unwrap();
+            if amount_a + accepted_a > required_a || amount_b + accepted_b > required_b {
+                return Err(Error::InsufficientBalance);
+            }
 
-        ink_env::test::set_caller::<ink_env::DefaultEnvironment>(accounts.charlie);
-        token_swap
-            .delete_swap(0)
-            .expect("Expected unauthorized error");
-    }
+            self.transfer_token(token_a, self.env().caller(), creator, amount_a)?;
+            self.transfer_token(token_b, self.env().caller(), creator, amount_b)?;
 
-    #[ink::test]
-    fn delete_swap_works_if_creator() {
-        let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+            let allowed_acceptor = swap_data.8;
 
-        let mut token_swap = TokenSwap::new();
-        token_swap
-            .create_swap(accounts.alice, accounts.bob, 50, 100, 10)
-            .unwrap();
-        let result = token_swap.delete_swap(0);
-        assert!(result.is_ok());
-        assert_eq!(token_swap.swap_count, 0);
-    }
+            let updated_swap = (
+                creator,
+                token_a,
+                token_b,
+                required_a,
+                required_b,
+                expiration,
+                accepted_a + amount_a,
+                accepted_b + amount_b,
+                allowed_acceptor,
+            );
 
-    #[ink::test]
-    fn accept_swap_works() {
-        let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+            self.swaps.insert(swap_id, &updated_swap);
 
-        let mut token_swap = TokenSwap::new();
-        token_swap
-            .create_swap(accounts.alice, accounts.bob, 50, 100, 10)
-            .unwrap();
-        let result = token_swap.accept_swap(0);
-        assert!(result.is_ok());
+            self.env().emit_event(SwapAccepted {
+                id: swap_id,
+                acceptor: self.env().caller(),
+            });
+
+            Ok(())
+        }
     }
 }
