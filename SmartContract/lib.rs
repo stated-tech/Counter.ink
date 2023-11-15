@@ -9,12 +9,12 @@ mod token_swap {
     use ink_env::DefaultEnvironment;
 
     pub type Swap = (
-        AccountId,
-        AccountId,
-        AccountId,
-        Balance,
-        Balance,
-        BlockNumber,
+        AccountId,         // creator
+        AccountId,         // token_a
+        AccountId,         // token_b
+        Balance,           // amount_a
+        Balance,           // amount_b
+        BlockNumber,       // expiration
         Balance,           // Amount of Token A already accepted
         Balance,           // Amount of Token B already accepted
         Option<AccountId>, // Allowed acceptor
